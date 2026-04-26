@@ -54,12 +54,71 @@ st.set_page_config(
     page_icon="🎯",
     layout="wide",
     initial_sidebar_state="expanded",
+    menu_items={
+        # Setting these to None removes the corresponding entries from the
+        # hamburger menu (Get help / Report a bug / About)
+        "Get Help": None,
+        "Report a bug": None,
+        "About": None,
+    },
 )
  
 # ── Custom CSS ──────────────────────────────────────────────────────────
 st.markdown("""
 <style>
   @import url('https://fonts.googleapis.com/css2?family=Rajdhani:wght@500;600;700&family=Inter:wght@400;500;600&display=swap');
+ 
+  /* ══════════════════════════════════════════════════════════════════
+     Hide Streamlit Cloud "GitHub" viewer badge & "Fork this app" menu
+     (keeps your repo / personal GitHub profile out of view)
+     ══════════════════════════════════════════════════════════════════ */
+ 
+  /* GitHub avatar / "View source" badge in the top-right corner */
+  [class*="_viewerBadge_"],
+  [class*="viewerBadge_"],
+  [class*="_profileContainer_"],
+  [class*="_profilePreview_"],
+  [class*="_link_"][href*="github.com"],
+  a[href*="streamlit.io/cloud"],
+  a[href*="share.streamlit.io"][class*="viewerBadge"] {
+    display: none !important;
+    visibility: hidden !important;
+  }
+ 
+  /* Hamburger "⋮" main menu — contains "Fork this app" / "View source" */
+  #MainMenu,
+  [data-testid="stMainMenu"],
+  [data-testid="stToolbarActions"],
+  [data-testid="stDeployButton"] {
+    display: none !important;
+    visibility: hidden !important;
+  }
+ 
+  /* "Made with Streamlit" footer */
+  footer { visibility: hidden !important; height: 0 !important; }
+  footer:after { display: none !important; }
+ 
+  /* Decorative emojis to fill the empty top-right space */
+  [data-testid="stHeader"] {
+    position: relative;
+    background: transparent !important;
+  }
+  [data-testid="stHeader"]::after {
+    content: "🎯  ✨  🚀  💜  ⚡";
+    position: fixed;
+    top: 14px;
+    right: 22px;
+    font-size: 18px;
+    letter-spacing: 4px;
+    z-index: 999999;
+    pointer-events: none;
+    filter: drop-shadow(0 0 8px rgba(124,58,237,0.55));
+    animation: emojifloat 3.5s ease-in-out infinite;
+  }
+  @keyframes emojifloat {
+    0%, 100% { transform: translateY(0); opacity: 0.95; }
+    50%      { transform: translateY(-2px); opacity: 1; }
+  }
  
   /* ── Base: deep space background with mesh ── */
   .stApp {
@@ -1188,11 +1247,11 @@ with tab_about:
       </div>
       <div style="background:linear-gradient(135deg,rgba(5,150,105,0.08),rgba(8,145,178,0.04));
         border:1px solid rgba(5,150,105,0.2); border-radius:14px; padding:18px;">
-        <div style="font-size:11px; color:#ff6b35; text-transform:uppercase; letter-spacing:1.5px; font-weight:600; margin-bottom:10px;">🌐 Deploy to Cloud</div>
+        <div style="font-size:11px; color:#ff6b35; text-transform:uppercase; letter-spacing:1.5px; font-weight:600; margin-bottom:10px;">🌐 Cloud-Ready</div>
         <div style="color:#ffffff; font-size:0.82rem; line-height:1.8;">
-          1. Push to <strong style="color:#34d399;">GitHub</strong><br>
-          2. Go to <strong style="color:#34d399;">share.streamlit.io</strong><br>
-          3. Connect repo → Deploy 🎉
+          Optimized for fast deployment with<br>
+          minimal setup. Works out of the box on<br>
+          most cloud platforms. ✨
         </div>
       </div>
     </div>

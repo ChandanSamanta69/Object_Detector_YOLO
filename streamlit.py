@@ -457,12 +457,22 @@ with st.sidebar:
         help="Nano is fastest; Large is most accurate.",
     )
     model_labels = {
-        "yolov8n.pt": "⚡ Nano — fastest",
+        "yolov8n.pt": "⚡ Nano — fastest (recommended for cloud)",
         "yolov8s.pt": "🚀 Small — balanced",
-        "yolov8m.pt": "🎯 Medium — accurate",
-        "yolov8l.pt": "💎 Large — best accuracy",
+        "yolov8m.pt": "🎯 Medium — accurate, slow on CPU",
+        "yolov8l.pt": "💎 Large — best accuracy, very slow on CPU",
     }
     st.caption(model_labels[model_choice])
+ 
+    # Warn the user when picking a heavy model on Streamlit Cloud (CPU-only,
+    # ~1 GB RAM). m / l will work but at ~0.5 FPS or less.
+    if model_choice in ("yolov8m.pt", "yolov8l.pt"):
+        st.warning(
+            "⚠️ This model is heavy and runs on CPU on Streamlit Cloud "
+            "(no GPU, limited RAM). Expect very slow processing. "
+            "Use **yolov8n** or **yolov8s** for smooth performance.",
+            icon="🐌",
+        )
  
     conf_threshold = st.slider(
         "Confidence threshold", 0.1, 0.95, 0.25, 0.05,
@@ -487,10 +497,14 @@ with st.sidebar:
         ["sort", "deepsort"] if WEBRTC_AVAILABLE else ["sort"],
         help="SORT is built-in. DeepSORT needs `pip install deep-sort-realtime`.",
     )
-    max_age   = st.slider("Max age (frames)",  5, 100, 50, 5,
+    max_age   = st.slider("Max age (frames)",  5, 100, 30, 5,
                           help="Frames to keep a track alive without a match.")
-    min_hits  = st.slider("Min hits (SORT)",   1,  10,  1, 1,
-                          help="Matched frames before a track is confirmed.")
+    min_hits  = st.slider("Min hits (SORT)",   1,  10,  3, 1,
+                          help="Matched frames before a track is confirmed. "
+                               "Higher = fewer flickering false tracks.")
+    track_iou = st.slider("Tracker IOU",       0.1, 0.9, 0.3, 0.05,
+                          help="Min IOU between detection and predicted track "
+                               "for them to be matched.")
  
     st.markdown("---")
  
@@ -569,13 +583,19 @@ with st.sidebar:
 # Cached model loader  (reloads only when settings change)
 # ═══════════════════════════════════════════════════════════════════════
  
-@st.cache_resource(show_spinner=False)
-def load_detector(model_path, conf, iou, classes):
+# max_entries=1 ensures the previous detector is freed when the user
+# switches model / changes settings — critical for Streamlit Cloud's
+# limited (~1 GB) RAM. Without this, every change keeps an old copy
+# of the YOLO weights in memory and the worker eventually OOMs (which
+# is what made yolov8m / yolov8l "not work").
+@st.cache_resource(show_spinner=False, max_entries=1)
+def load_detector(model_path, conf, iou, classes, imgsz):
     return ObjectDetector(
         model_path=model_path,
         conf_threshold=conf,
         iou_threshold=iou,
         target_classes=classes if classes else None,
+        imgsz=imgsz,
     )
  
  
@@ -787,6 +807,13 @@ with tab_upload:
  
         st.markdown("---")
  
+        st.caption(
+            "ℹ️ Adjust sidebar settings (model / confidence / IOU / classes / "
+            "tracker), **then** press **Start Processing**. Settings are "
+            "captured at start time — changing sliders mid-run won't take "
+            "effect until you start again."
+        )
+ 
         # ── Start button ──────────────────────────────────────────────
         col_btn1, col_btn2, col_btn3 = st.columns([2, 1, 2])
         with col_btn2:
@@ -798,9 +825,16 @@ with tab_upload:
                 detector = load_detector(
                     model_choice, conf_threshold, iou_threshold,
                     tuple(target_classes) if target_classes else None,
+                    int(resize_width),
                 )
  
-            tracker    = TrackerFactory.create(tracker_type, max_age=max_age, min_hits=min_hits)
+            tracker    = TrackerFactory.create(
+                tracker_type,
+                max_age=max_age,
+                min_hits=min_hits,
+                iou_threshold=track_iou,
+                reset_ids=True,   # restart IDs from 1 for each new run
+            )
             fps_ctr    = FPSCounter(window=30)
             obj_ctr    = ObjectCounter()
  
@@ -847,12 +881,16 @@ with tab_upload:
             stop_btn      = st.button("⏹️  Stop", key="stop_upload", on_click=_set_stop)
  
             # ── Prepare output writer ─────────────────────────────────
-            proc_w      = resize_width
-            proc_h      = int(src_h * proc_w / src_w)
-            tmp_output  = tempfile.NamedTemporaryFile(delete=False, suffix=".mp4")
+            # IMPORTANT: when frame_skip > 1 we only write every Nth frame,
+            # so the output FPS must be source_fps / frame_skip — otherwise
+            # the saved video plays back at N× speed and looks choppy.
+            proc_w       = resize_width
+            proc_h       = int(src_h * proc_w / src_w)
+            output_fps   = max(1.0, src_fps / max(1, frame_skip))
+            tmp_output   = tempfile.NamedTemporaryFile(delete=False, suffix=".mp4")
             tmp_output.close()
-            fourcc      = cv2.VideoWriter_fourcc(*"mp4v")
-            writer      = cv2.VideoWriter(tmp_output.name, fourcc, src_fps, (proc_w, proc_h))
+            fourcc       = cv2.VideoWriter_fourcc(*"mp4v")
+            writer       = cv2.VideoWriter(tmp_output.name, fourcc, output_fps, (proc_w, proc_h))
  
             # ── Processing loop ───────────────────────────────────────
             cap        = cv2.VideoCapture(tmp_input.name)
@@ -1028,16 +1066,23 @@ with tab_webcam:
             icon="📷",
         )
  
-        st.session_state["wb_model"]   = model_choice
-        st.session_state["wb_conf"]    = conf_threshold
-        st.session_state["wb_iou"]     = iou_threshold
-        st.session_state["wb_classes"] = tuple(target_classes) if target_classes else None
-        st.session_state["wb_tracker"] = tracker_type
-        st.session_state["wb_max_age"] = max_age
-        st.session_state["wb_min_hits"]= min_hits
-        st.session_state["wb_fps"]     = show_fps
-        st.session_state["wb_count"]   = show_count
-        st.session_state["wb_width"]   = resize_width
+        st.session_state["wb_model"]    = model_choice
+        st.session_state["wb_conf"]     = conf_threshold
+        st.session_state["wb_iou"]      = iou_threshold
+        st.session_state["wb_classes"]  = tuple(target_classes) if target_classes else None
+        st.session_state["wb_tracker"]  = tracker_type
+        st.session_state["wb_max_age"]  = max_age
+        st.session_state["wb_min_hits"] = min_hits
+        st.session_state["wb_track_iou"]= track_iou
+        st.session_state["wb_fps"]      = show_fps
+        st.session_state["wb_count"]    = show_count
+        st.session_state["wb_width"]    = resize_width
+ 
+        st.caption(
+            "ℹ️ Webcam settings are baked in when **START** is pressed. "
+            "Changing sliders mid-stream has no effect — press **STOP** "
+            "and **START** again to apply new settings."
+        )
  
         class LiveVideoProcessor(VideoProcessorBase):
             def __init__(self):
@@ -1047,11 +1092,14 @@ with tab_webcam:
                     conf_threshold=ss.get("wb_conf", 0.25),
                     iou_threshold=ss.get("wb_iou", 0.40),
                     target_classes=ss.get("wb_classes", None),
+                    imgsz=int(ss.get("wb_width", 640)),
                 )
                 self.tracker = TrackerFactory.create(
                     ss.get("wb_tracker", "sort"),
-                    max_age=ss.get("wb_max_age", 50),
-                    min_hits=ss.get("wb_min_hits", 1),
+                    max_age=ss.get("wb_max_age", 30),
+                    min_hits=ss.get("wb_min_hits", 3),
+                    iou_threshold=ss.get("wb_track_iou", 0.3),
+                    reset_ids=True,
                 )
                 self.fps_ctr  = FPSCounter(window=30)
                 self.obj_ctr  = ObjectCounter()
@@ -1097,9 +1145,16 @@ with tab_webcam:
                 detector = load_detector(
                     model_choice, conf_threshold, iou_threshold,
                     tuple(target_classes) if target_classes else None,
+                    int(resize_width),
                 )
  
-            tracker = TrackerFactory.create(tracker_type, max_age=max_age, min_hits=min_hits)
+            tracker = TrackerFactory.create(
+                tracker_type,
+                max_age=max_age,
+                min_hits=min_hits,
+                iou_threshold=track_iou,
+                reset_ids=True,
+            )
             fps_ctr = FPSCounter(window=30)
             obj_ctr = ObjectCounter()
  
